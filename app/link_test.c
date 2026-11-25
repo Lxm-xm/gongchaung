@@ -36,6 +36,17 @@
  * 16 位，回绕一次要 65536 帧，比赛期间不会回绕。 */
 static uint16_t s_seq;
 
+
+typedef enum {
+    MISSION_IDLE = 0, /* 空闲\未启动 */
+    MISSION_RUN = 1, /* 启动 */
+    MISSION_HOLD = 2, /* 暂停 */
+    MISSION_DONE = 3, /* 完成 */
+    MISSION_FAULT = 4 /* 故障 */
+}mission_state_t;
+
+static mission_state_t s_mission = MISSION_IDLE; /* 当前任务状态 */
+
 /* 上一次发心跳的时刻（毫秒） */
 static uint32_t s_last_hb;
 
@@ -59,21 +70,66 @@ static void send_frame(uint8_t type, const uint8_t *pl, uint16_t len)
 }
 
 /**
+ * 处理 0x13 任务命令
+ * @return 0 成功；2 载荷不对；3 未知命令   ← 这个值会写进 ACK 的 result 字节
+ */
+static uint8_t handle_mission_cmd(const uint8_t *pl, uint16_t len)
+{
+    if ((pl == 0) || (len < 1U)) {
+        return 2U;                        /* 命令字都没带 */
+    }
+
+    switch (pl[0]) {
+    case 1U:                              /* START */
+        s_mission = MISSION_RUN;
+        return 0U;
+
+    case 2U:                              /* PAUSE */
+        s_mission = MISSION_HOLD;
+        return 0U;
+
+    case 3U:                              /* RESUME */
+        s_mission = MISSION_RUN;
+        return 0U;
+
+    case 4U:                              /* ABORT */
+    case 5U:                              /* CLEAR */
+        s_mission = MISSION_IDLE;
+        return 0U;
+
+    default:
+        return 3U;                        /* 未知命令：状态不动 */
+    }
+}
+
+/**
  * 收到一帧"CRC 校验通过"的数据后，由 Frame_Feed 回调进来。
  * 现在只做一件事：把收到的命令字原样回一个 ACK。
  */
 static void on_frame(uint8_t type, const uint8_t *payload, uint16_t len)
 {
+    uint8_t result = 0U;   /* 0=成功，非0留给以后表示失败原因 */
+       
+    switch (type) {
+    case MSG_MISSION_CMD:
+        result = handle_mission_cmd(payload, len);
+        break;
+        
+        case MSG_HEARTBEAT:
+        result = 0U; /* 任务码不做处理，直接回 ACK */
+        break;
+
+        default:
+        /* 0x10 / 0x11 / 0x12 第 2 步再处理，现在先照旧回 ACK */
+        result = 0U;
+        break;
+    }
+      {
     uint8_t ack[2];
-
-    /* 这两个参数现在用不到。加 (void) 是告诉编译器"我知道没用"，
-     * 避免 -Wunused-parameter 告警。以后做业务时这里会解析 payload。 */
-    (void)payload;
-    (void)len;
-
     ack[0] = type;      /* 把命令字原样带回：上位机据此知道"哪条命令被确认了" */
-    ack[1] = 0U;        /* 结果码：0 = 成功，非 0 留给以后表示失败原因 */
+    ack[1] = result;    /* 结果码：0 = 成功，非 0 留给以后表示失败原因 */
     send_frame(MSG_ACK, ack, 2U);
+      }
 }
 
 void LinkTest_Init(void)
@@ -97,7 +153,7 @@ void LinkTest_Step(void)
      *   hb[4] = 接收错误次数（Uart1_ErrTotal 的低字节，ORE/FE/NE）
      * 上位机侧如果是按固定 4 字节解析的，注意这里长度变成了 5，帧里的 len 字段会跟着变。
      * 定位完把 hb[1..4] 恢复成 0、长度改回 4 即可。 */
-    uint8_t  hb[5];
+    uint8_t  hb[6];   /* hb[0..4] 调试计数 + hb[5] 任务状态，共 6 字节 */
 
     /* ── 1) 把环形缓冲里积压的字节全部取出来喂给拆帧器 ──
      * 一次取 1 个字节是为了复用 Frame_Feed 的逐字节接口，
@@ -117,7 +173,7 @@ void LinkTest_Step(void)
         hb[2] = (uint8_t)Frame_OkCount();      /* 多少帧 CRC 通过 */
         hb[3] = (uint8_t)Frame_BadCount();     /* 多少帧帧头/版本/长度/CRC 出错 */
         hb[4] = (uint8_t)Uart1_ErrTotal();     /* 多少字节被 ORE/FE/NE 吃掉 */
-
-        send_frame(MSG_EVENT, hb, 5U);   /* evt=0 即心跳 */
+        hb[5] = (uint8_t)s_mission;          /* ← 新增：任务状态 */
+        send_frame(MSG_EVENT, hb, 6U);   /* evt=0 即心跳 */
     }
 }
