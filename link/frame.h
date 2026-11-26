@@ -46,6 +46,27 @@
 #define MSG_EVENT           0x81U   /* 事件上报（到位/抓放成功/故障/心跳） */
 #define MSG_ACK             0x82U   /* 命令应答 */
 
+/* ── 0x11 段任务表：头 12 字节 ── */
+typedef struct __attribute__((packed)) {
+    uint8_t stage;      /* 0..7 */
+    uint8_t action;     /* 1扫码 2抓 3放 4码垛 5回库 */
+    uint8_t wp_count;   /*后面跟几个航向*/
+    uint8_t reserved;
+    uint8_t color[3];   /* 三个物料的颜色顺序 1..6 */
+    uint8_t ring[3];    /* 三个放置环号 1..6 */
+    uint8_t reserved2[2];
+}frame_stage_hdr_t;    /*12字节*/  
+
+/*——单个航点8字节——*/
+typedef struct __attribute__((packed)) {
+    int16_t x_mm;
+    int16_t y_mm;
+    int16_t yaw_ddeg;    /* 0.1°，900 = 90.0° */
+    uint8_t flags;       /* bit0 到位停 / bit1 可横移 / bit2 末点 */
+    uint8_t reserved;
+} frame_wp_t;     
+
+
 /**
  * @brief 收帧回调原型
  * @param type     命令字（就是帧里的 type 字段）
