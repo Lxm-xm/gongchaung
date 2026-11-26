@@ -57,8 +57,8 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved2[2];
 }frame_stage_hdr_t;    /*12字节*/  
 
-/*——单个航点8字节——*/
-typedef struct __attribute__((packed)) {
+ /*——单个航点8字节——*/
+typedef struct __attribute__((packed)) {  
     int16_t x_mm;
     int16_t y_mm;
     int16_t yaw_ddeg;    /* 0.1°，900 = 90.0° */
@@ -66,7 +66,22 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved;
 } frame_wp_t;     
 
+/* ── 0x80 位姿上报：16 字节 ── */
+typedef struct __attribute__((packed)) {
+    int16_t  x_mm;        /* 场地坐标 X */
+    int16_t  y_mm;        /* 场地坐标 Y */
+    int16_t  yaw_ddeg;    /* 朝向 0.1°：900 = 90.0° */
+    int16_t  vx_mmps;     /* 当前速度（调试用） */
+    int16_t  vy_mmps;
+    uint8_t  state;       /* 任务状态，接 s_mission */
+    uint8_t  stage;       /* 第几段 */
+    uint8_t  enc_mask;    /* 四轮编码器在线位图，0x0F=全好 */
+    uint8_t  imu_ok;      /* 陀螺仪有效 */
+    uint16_t fault;       /* 故障码 */
+} frame_pose_t;           /* 5×2 + 4 + 2 = 16 字节 */
 
+/* ★编译期校验：结构体必须是 16 字节，否则帧长会变、上位机解析全错 */
+_Static_assert(sizeof(frame_pose_t) == 16U, "frame_pose_t must be 16 bytes");
 /**
  * @brief 收帧回调原型
  * @param type     命令字（就是帧里的 type 字段）

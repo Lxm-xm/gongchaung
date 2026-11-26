@@ -56,6 +56,40 @@ static mission_state_t s_mission = MISSION_IDLE; /* 当前任务状态 */
 static uint16_t s_last_stage = 0xFFFFU; /* 还没有收到过0x11 */
 static uint8_t  s_last_wp    = 0U;
 
+/* 调试开关：验收 ACK/队列时先关掉 POSE，免得 20Hz 刷屏看不见别的帧 */
+#define POSE_ENABLE   0
+static uint32_t s_last_pose_ms;
+static uint32_t s_pose_cnt;          /* 累计发了几帧，调试用 */
+
+/* 前向声明：send_frame 定义在文件下方，send_pose 要先用到它 */
+static void send_frame(uint8_t type, const uint8_t *pl, uint16_t len);
+
+/* 0x80位姿上报,20Hz */
+static void send_pose(void)
+{
+    frame_pose_t p;
+
+    /* ── 假数据 ──
+     * 等 CAN 和陀螺仪接上，把下面几行换成真实值：
+     *   p.x_mm / p.y_mm / p.yaw_ddeg  ← 里程计 + 陀螺仪
+     *   p.vx_mmps / p.vy_mmps         ← 底盘
+     *   p.enc_mask / p.imu_ok         ← 在线状态
+     */
+    p.x_mm      = 0;
+    p.y_mm      = 0;
+    p.yaw_ddeg  = 0;
+    p.vx_mmps   = 0;
+    p.vy_mmps   = 0;
+    p.state     = (uint8_t)s_mission;   /* ← 接第 1 步做的状态机 */
+    p.stage     = 0;
+    p.enc_mask  = 0;                    /* 还没有编码器 */
+    p.imu_ok    = 0;                    /* 还没有陀螺仪 */
+    p.fault     = 0;
+
+    send_frame(MSG_POSE, (const uint8_t *)&p, (uint16_t)sizeof(p));
+    s_pose_cnt++;
+}
+
 /**
  * 处理 0x11 段任务表（解析段任务，把航点入队）
  * @return 0 成功 / 1 队列满 / 2 载荷不对
@@ -193,6 +227,8 @@ void LinkTest_Init(void)
 {
     s_seq = 0U;
     s_last_hb = 0U;
+    s_last_pose_ms = 0U;
+    s_pose_cnt = 0U;
     Frame_Reset();      /* 清拆帧状态机与统计 */
     Uart1_Init();       /* 启动 USART1 单字节中断接收 */
 }
@@ -212,13 +248,18 @@ void LinkTest_Step(void)
      * 定位完把 hb[1..4] 恢复成 0、长度改回 4 即可。 */
     uint8_t  hb[9];   
 
-    /* ── 1) 把环形缓冲里积压的字节全部取出来喂给拆帧器 ──
-     * 一次取 1 个字节是为了复用 Frame_Feed 的逐字节接口，
-     * 简单可靠；字节数不多（20ms 内最多 230 个），这点开销可以接受。 */
+    /* ① 收帧 */
     while (Uart1_Read(&b, 1) == 1) {
         Frame_Feed(b, on_frame);
     }
 
+    /* ② 位姿 20Hz：每 50ms 一帧（和心跳完全不同频，不能放进同一个 if） */
+#if (POSE_ENABLE != 0)
+    if ((now - s_last_pose_ms) >= 50U) {
+        s_last_pose_ms = now;
+        send_pose();
+    }
+#endif
     /* ── 2) 到点就发心跳 ──
      * 用"当前时间 - 上次时间 >= 周期"而不是定时器，
      * 这样即使任务偶尔被拖慢，也不会累积漂移。 */
