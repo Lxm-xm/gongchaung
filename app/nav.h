@@ -23,4 +23,9 @@ bool Nav_Empty(void);
 bool Nav_Current(NavPoint_t *out);
 bool Nav_Advance(void);
 
+/* ── 按段操作（新方案：0x11 重发要覆盖同段，0x12 mode=1 要替换剩余） ── */
+uint16_t Nav_RemoveStage(uint8_t stage);
+uint8_t Nav_ReplaceStage(uint8_t stage, const NavPoint_t *pts, uint8_t n);
+uint16_t Nav_CountStage(uint8_t stage);
+
 #endif

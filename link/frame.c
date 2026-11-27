@@ -197,7 +197,10 @@ void Frame_Feed(uint8_t b, frame_rx_cb_t cb)
             /* 校验通过：把 type 和载荷交给上层。
              * 注意 payload 指向内部缓冲，回调里要用完就处理掉，别存指针。 */
             if (cb != 0) {
-                cb(s_rx[3], &s_rx[FRAME_HDR_LEN], s_need);
+                /* seq 来自帧头 s_rx[4..5]（小端），回传给上层，ACK 好原样带回 */
+                cb(s_rx[3],
+                   (uint16_t)((uint16_t)s_rx[4] | ((uint16_t)s_rx[5] << 8U)),
+                   &s_rx[FRAME_HDR_LEN], s_need);
             }
         } else {
             /* CRC 错：整帧丢弃。

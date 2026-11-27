@@ -40,11 +40,40 @@
 #define MSG_WAYPOINT_ADD    0x12U   /* 比赛中临时追加航点（改道） */
 #define MSG_MISSION_CMD     0x13U   /* 开始 / 暂停 / 继续 / 中止 / 清空 */
 #define MSG_HEARTBEAT       0x14U   /* 上位机心跳（证明它还活着） */
+#define MSG_VISION_ADJUST   0x15U   /* 视觉对位偏移（抓取前，可能连发 2~3 次） */
 
 /* ---------------- 命令字：下位机 → 上位机 ---------------- */
 #define MSG_POSE            0x80U   /* 位姿上报，20Hz */
 #define MSG_EVENT           0x81U   /* 事件上报（到位/抓放成功/故障/心跳） */
 #define MSG_ACK             0x82U   /* 命令应答 */
+
+/* ---------------- 0x12 的 mode 字段 ----------------
+ * "追加"和"替换"是两种完全不同的语义，混用会让车走回头路：
+ *   追加：中途绕障，在队尾补两个点，原有进度不动
+ *   替换：AMCL 纠偏后重规划，把"当前段还没走完的点"整体换掉
+ */
+#define WP_MODE_APPEND      0U      /* 追加到队尾 */
+#define WP_MODE_REPLACE     1U      /* 替换当前段剩余航点 */
+
+/* ---------------- EVENT(0x81) 的子事件码（payload[0]） ----------------
+ * payload 统一 3 字节：{ evt, arg1, arg2 }
+ */
+#define EVT_HEARTBEAT       0U      /* 心跳（arg1/arg2 调试用计数） */
+#define EVT_ARRIVED         1U      /* 到位       arg1=段号 arg2=点序 */
+#define EVT_STAGE_DONE      2U      /* 一段做完   arg1=段号 */
+#define EVT_GRAB_OK         3U      /* 抓取成功   arg1=段号 arg2=物料序号 */
+#define EVT_PLACE_OK        4U      /* 放置成功   arg1=段号 arg2=环号 */
+#define EVT_STABLE          5U      /* ★停稳确认 ar1=段号 —— Pi 收到后才做 AMCL 纠偏 */
+#define EVT_FAULT           6U      /* 故障       arg1=故障码低字节 */
+#define EVT_DONE            7U      /* 全部完成   arg1=抓取数 arg2=放置数 */
+#define EVT_VISION_DONE     9U      /* 视觉对位动作做完 arg1=段号 */
+
+/* ---------------- fault 位（在 POSE / EVT_FAULT 里上报） ---------------- */
+#define FAULT_LINK_LOST     0x0001U /* 上位机断链 */
+#define FAULT_MOTOR_OFF     0x0002U /* 有电机掉线 */
+#define FAULT_SLIP          0x0004U /* 检测到打滑 */
+#define FAULT_VISION_FAIL   0x0008U /* 视觉对位失败 */
+#define FAULT_IMU_OFF       0x0010U /* 陀螺仪无效 */
 
 /* ── 0x11 段任务表：头 12 字节 ── */
 typedef struct __attribute__((packed)) {
@@ -66,6 +95,22 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved;
 } frame_wp_t;     
 
+/* ── 0x12 航点补丁：头 4 字节 ── */
+typedef struct __attribute__((packed)) {
+    uint8_t mode;       /* 0 = 追加 / 1 = 替换当前段剩余 */
+    uint8_t stage;      /* 目标段号 */
+    uint8_t wp_count;   /* 后面跟几个航点 */
+    uint8_t reserved;
+} frame_patch_hdr_t;    /* 4 字节 */
+
+/* ── 0x15 视觉对位偏移：6 字节 ── */
+typedef struct __attribute__((packed)) {
+    int16_t dx_mm;      /* 车体右为正（或按约定，两端必须一致） */
+    int16_t dy_mm;      /* 车体前为正 */
+    uint8_t flags;      /* bit0 对位成功 / bit1 目标丢失 */
+    uint8_t reserved;
+} frame_vision_t;       /* 6 字节 */
+
 /* ── 0x80 位姿上报：16 字节 ── */
 typedef struct __attribute__((packed)) {
     int16_t  x_mm;        /* 场地坐标 X */
@@ -80,16 +125,21 @@ typedef struct __attribute__((packed)) {
     uint16_t fault;       /* 故障码 */
 } frame_pose_t;           /* 5×2 + 4 + 2 = 16 字节 */
 
-/* ★编译期校验：结构体必须是 16 字节，否则帧长会变、上位机解析全错 */
-_Static_assert(sizeof(frame_pose_t) == 16U, "frame_pose_t must be 16 bytes");
+/* ★编译期校验：结构体少写 packed 会因对齐变大，帧长就变了，上位机解析全错 */
+_Static_assert(sizeof(frame_pose_t)       == 16U, "frame_pose_t must be 16 bytes");
+_Static_assert(sizeof(frame_stage_hdr_t)  == 12U, "frame_stage_hdr_t must be 12 bytes");
+_Static_assert(sizeof(frame_wp_t)         ==  8U, "frame_wp_t must be 8 bytes");
+_Static_assert(sizeof(frame_patch_hdr_t)  ==  4U, "frame_patch_hdr_t must be 4 bytes");
+_Static_assert(sizeof(frame_vision_t)     ==  6U, "frame_vision_t must be 6 bytes");
 /**
  * @brief 收帧回调原型
  * @param type     命令字（就是帧里的 type 字段）
+ * @param seq      这一帧的发送序号（来自帧头 seq 字段，小端已拼好，用于命令配对）
  * @param payload  载荷首地址（指向内部缓冲，回调返回后失效，别存指针）
  * @param len      载荷长度
  * @note  回调在调用 Frame_Feed 的那个任务上下文里执行，不在中断里。
  */
-typedef void (*frame_rx_cb_t)(uint8_t type, const uint8_t *payload, uint16_t len);
+typedef void (*frame_rx_cb_t)(uint8_t type, uint16_t seq, const uint8_t *payload, uint16_t len);
 
 /**
  * @brief 算 CRC16-CCITT（初值 0xFFFF，多项式 0x1021，不反射、不异或输出）

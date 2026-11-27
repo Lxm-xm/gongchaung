@@ -18,18 +18,19 @@
 #ifndef LINK_TEST_H
 #define LINK_TEST_H
 
-/**
- * @brief 初始化：重置拆帧状态机 + 启动 USART1 接收
- * @note  在任务里、MX_USART1_UART_Init() 之后调用一次。
- */
+#include <stdint.h>
+#include <stdbool.h>
+
+static void on_frame(uint8_t type, uint16_t seq, const uint8_t *payload, uint16_t len);
+static void send_frame(uint8_t type, const uint8_t *pl, uint16_t len);
+static uint8_t handle_mission_cmd(const uint8_t *pl, uint16_t len);
+static uint8_t handle_vision_adjust(const uint8_t *pl, uint16_t len);
+static uint8_t handle_stage_plan(const uint8_t *pl, uint16_t len);
+static uint8_t handle_waypoint_patch(const uint8_t *pl, uint16_t len);
+static void send_pose(void);
 void LinkTest_Init(void);
 
-/**
- * @brief 主循环体：收帧 + 定时发心跳
- * @note  每 20ms 调一次。
- *        20ms 是权衡：115200 下一周期最多积压 230 字节（缓冲 512 够用），
- *        而每秒只唤醒 50 次，CPU 开销可忽略。
- */
+
 void LinkTest_Step(void);
 
 #endif /* LINK_TEST_H */
